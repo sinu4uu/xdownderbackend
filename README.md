@@ -1,6 +1,6 @@
-# ⚡ OmniDownloader Backend API (Render-Ready)
+# ⚡ XDOWNDERBACKEND API (Render-Ready)
 
-Single-file production backend (`main.py`) providing high-speed media extraction endpoints for **Instagram, Spotify, Apple Music, TeraBox, YouTube, TikTok, Snapchat, Twitter/X**, and a **General / Universal** endpoint that auto-detects links.
+Single-file production backend (`main.py`) providing high-speed media extraction endpoints for **Instagram, Facebook, Spotify, Apple Music, TeraBox, YouTube, TikTok, Snapchat, Twitter/X**, and a **General / Universal** endpoint that auto-detects links.
 
 ---
 
@@ -20,7 +20,7 @@ Open **[http://localhost:5000](http://localhost:5000)** in your browser or make 
 Render is 100% supported out-of-the-box!
 
 ### Option 1: Automatic via Blueprint (`render.yaml`)
-1. Push this `backend` repo/folder to GitHub.
+1. Push this repository to GitHub.
 2. Go to **[Render Dashboard](https://dashboard.render.com/)** -> **New** -> **Blueprint**.
 3. Select your repository. Render will automatically read `render.yaml` and configure everything!
 
@@ -28,7 +28,6 @@ Render is 100% supported out-of-the-box!
 1. In Render, click **New +** -> **Web Service**.
 2. Connect your GitHub repository.
 3. Configure the settings:
-   - **Root Directory**: `backend` (if located inside a subfolder) or leave empty if `main.py` is at root.
    - **Environment**: `Python 3`
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `gunicorn --workers 2 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT main:app`
@@ -48,10 +47,10 @@ All endpoints support both **GET** (with `?url=...`) and **POST** (with JSON `{ 
 | **Universal / General** | `/api/general` or `/api/universal` | Auto-detects platform and resolves media links |
 | **Instagram** | `/api/instagram` | Reels, Posts, Carousels, Stories, Highlights, Profiles |
 | **Instagram Sub-routes** | `/api/instagram/post`, `/api/instagram/story`, `/api/instagram/highlight`, `/api/instagram/profile` | Direct targeted Instagram extraction |
+| **Facebook** | `/api/facebook` or `/api/fb` | High-res Facebook Videos, Reels, and Stories |
 | **Spotify** | `/api/spotify` | Single Tracks, Albums, Playlists (Direct 320kbps MP3s) |
 | **Apple Music** | `/api/apple` or `/api/apple-music` | Apple Music Songs, Albums, Playlists (Direct MP3) |
 | **TeraBox** | `/api/terabox` | File & Folder tree, direct download link, sizes |
-| **TeraBox Proxy** | `/api/terabox/download` | High-speed streaming proxy bypass download |
 | **YouTube** | `/api/youtube` or `/api/yt` | Videos, Shorts, Playlists, YT Music (`&audio=true` for MP3) |
 | **TikTok** | `/api/tiktok` | Watermark-free video & audio |
 | **Snapchat** | `/api/snapchat` | Spotlight clips & stories |

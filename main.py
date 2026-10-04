@@ -68,7 +68,8 @@ def set_cached_media(key: str, data: Any, ttl: int = CACHE_TTL):
 # ==============================================================================
 PORT = int(os.environ.get("PORT", 5000))
 HOST = os.environ.get("HOST", "0.0.0.0")
-APP_VERSION = "6.5.0-RenderReady"
+APP_NAME = "XDOWNDERBACKEND"
+APP_VERSION = "7.0.0-XDOWNDERBACKEND"
 DEFAULT_NDUS = os.environ.get("NDUS", "YuLuQdPpeHuiMGEQDXpWDu6K2P4-xInj8YGEzswD")
 TERABOX_API_ENDPOINT = os.environ.get("TERABOX_API_ENDPOINT", "https://terabox-dl-pink.vercel.app/api")
 
@@ -1133,8 +1134,13 @@ def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = 
         "noplaylist": True,
         "skip_download": True,
         "check_formats": None,
-        "socket_timeout": 10,
+        "socket_timeout": 15,
         "no_color": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "android"],
+            }
+        },
     }
 
     if os.path.exists(cookies_path):
@@ -1302,7 +1308,11 @@ def extract_universal(url: str, cookies_path: str = COOKIES_FILE) -> Dict[str, A
         ig = InstagramService(cookies_path=cookies_path)
         return ig.dispatch_url(link)
 
-    # 5. YouTube, TikTok, Snapchat, Twitter, and other yt-dlp supported media
+    # 5. Facebook
+    if any(d in lower for d in ["facebook.com", "fb.watch", "fb.com", "fb.gg"]):
+        return extract_ytdlp_media(link, cookies_path=cookies_path)
+
+    # 6. YouTube, TikTok, Snapchat, Twitter, and other yt-dlp supported media
     return extract_ytdlp_media(link, cookies_path=cookies_path)
 
 
@@ -1337,17 +1347,17 @@ def create_app() -> Flask:
     @app.route("/", methods=["GET"])
     def home():
         return jsonify({
-            "service": "OmniDownloader Universal Backend API",
+            "service": "XDOWNDERBACKEND Universal API",
             "version": APP_VERSION,
             "status": "online",
-            "message": "Welcome to OmniDownloader API. Use /api/general?url={url} for universal extraction or service-specific endpoints.",
+            "message": "Welcome to XDOWNDERBACKEND API. Use /api/general?url={url} for universal extraction or service-specific endpoints.",
             "endpoints": {
                 "universal": "/api/general?url={media_url}",
                 "instagram": "/api/instagram?url={post_or_reel_url}",
+                "facebook": "/api/facebook?url={facebook_video_url}",
                 "spotify": "/api/spotify?url={track_or_album_url}",
                 "apple_music": "/api/apple?url={apple_music_url}",
                 "terabox": "/api/terabox?url={terabox_url}",
-                "terabox_download_proxy": "/api/terabox/download?url={direct_dlink}&filename={filename}",
                 "youtube": "/api/youtube?url={video_or_shorts_url}",
                 "tiktok": "/api/tiktok?url={tiktok_url}",
                 "snapchat": "/api/snapchat?url={snapchat_url}",
@@ -1361,7 +1371,7 @@ def create_app() -> Flask:
     def list_services():
         """Lists all supported services and documentation."""
         return jsonify({
-            "service": "OmniDownloader Universal Backend API",
+            "service": "XDOWNDERBACKEND Universal API",
             "version": APP_VERSION,
             "status": "online",
             "endpoints": {
@@ -1369,7 +1379,7 @@ def create_app() -> Flask:
                     "path": "/api/general",
                     "aliases": ["/api/universal"],
                     "methods": ["GET", "POST"],
-                    "description": "Auto-detects platform (Spotify, IG, TeraBox, Apple, YouTube, etc.) and returns structured media JSON"
+                    "description": "Auto-detects platform (Spotify, IG, FB, TeraBox, Apple, YouTube, etc.) and returns structured media JSON"
                 },
                 "instagram": {
                     "path": "/api/instagram",
@@ -1381,6 +1391,12 @@ def create_app() -> Flask:
                     ],
                     "methods": ["GET", "POST"],
                     "description": "Extracts Instagram reels, posts, carousels, stories, highlights, and profiles"
+                },
+                "facebook": {
+                    "path": "/api/facebook",
+                    "aliases": ["/api/fb"],
+                    "methods": ["GET", "POST"],
+                    "description": "Extracts Facebook videos, reels, and stories in high resolution"
                 },
                 "spotify": {
                     "path": "/api/spotify",
@@ -1395,9 +1411,8 @@ def create_app() -> Flask:
                 },
                 "terabox": {
                     "path": "/api/terabox",
-                    "proxy_path": "/api/terabox/download",
                     "methods": ["GET", "POST"],
-                    "description": "Extracts TeraBox files and folders with direct download link and streaming proxy"
+                    "description": "Extracts TeraBox files and folders with direct download link and sizes"
                 },
                 "youtube": {
                     "path": "/api/youtube",
@@ -1641,7 +1656,27 @@ def create_app() -> Flask:
             return jsonify({"status": "error", "message": f"Proxy streaming failed: {ex}"}), 500
 
     # --------------------------------------------------------------------------
-    # 6. YOUTUBE, TIKTOK, SNAPCHAT, TWITTER / X ENDPOINTS
+    # 6. FACEBOOK ENDPOINTS
+    # --------------------------------------------------------------------------
+    @app.route("/api/facebook", methods=["GET", "POST"])
+    @app.route("/api/fb", methods=["GET", "POST"])
+    def api_facebook():
+        url = get_param("url")
+        if not url:
+            return jsonify({"status": "error", "message": "Missing 'url' parameter"}), 400
+        cache_key = f"facebook:{url.strip()}"
+        cached = get_cached_media(cache_key)
+        if cached:
+            return jsonify(cached), 200
+        try:
+            data = extract_ytdlp_media(url)
+            set_cached_media(cache_key, data)
+            return jsonify(data), 200
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    # --------------------------------------------------------------------------
+    # 7. YOUTUBE, TIKTOK, SNAPCHAT, TWITTER / X ENDPOINTS
     # --------------------------------------------------------------------------
     @app.route("/api/youtube", methods=["GET", "POST"])
     @app.route("/api/yt", methods=["GET", "POST"])
@@ -1721,5 +1756,5 @@ app = create_app()
 # 10. CLI & DIRECT RUN ENTRYPOINT
 # ==============================================================================
 if __name__ == "__main__":
-    print(f"🚀 Starting OmniDownloader Web API on http://{HOST}:{PORT} (v{APP_VERSION})")
+    print(f"🚀 Starting XDOWNDERBACKEND Web API on http://{HOST}:{PORT} (v{APP_VERSION})")
     app.run(host=HOST, port=PORT, debug=False)
