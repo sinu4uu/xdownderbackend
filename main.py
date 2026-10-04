@@ -1127,6 +1127,8 @@ def get_instagram_service(cookies_path: str = COOKIES_FILE) -> "InstagramService
 def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = COOKIES_FILE) -> Dict[str, Any]:
     """Extracts all video and audio formats using yt-dlp across 1000+ sites with complete format tree."""
     t0 = time.time()
+    clean_url = (url or "").strip()
+    is_youtube = any(y in clean_url.lower() for y in ["youtube.com", "youtu.be"])
 
     ydl_opts = {
         "quiet": True,
@@ -1136,18 +1138,35 @@ def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = 
         "check_formats": None,
         "socket_timeout": 15,
         "no_color": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android"],
-            }
-        },
     }
 
-    if os.path.exists(cookies_path):
+    if is_youtube:
+        ydl_opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["android", "ios"],
+            }
+        }
+    elif os.path.exists(cookies_path):
         ydl_opts["cookiefile"] = cookies_path
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    info = None
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean_url, download=False)
+    except Exception as ex:
+        # If YouTube threw bot check or cookie error, retry with clean android/ios client and without cookies
+        if is_youtube:
+            retry_opts = dict(ydl_opts)
+            retry_opts.pop("cookiefile", None)
+            retry_opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["android", "ios"],
+                }
+            }
+            with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=False)
+        else:
+            raise ex
 
     if not info:
         raise RuntimeError("yt-dlp could not extract media info for this URL.")
