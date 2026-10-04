@@ -14,11 +14,16 @@ from urllib.parse import urlparse, parse_qs, quote, unquote
 import requests
 from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
 import yt_dlp
 import instaloader
 from instaloader import Instaloader, Profile, Post
+
+try:
+    from pytubefix import YouTube as PyTubeYouTube
+except ImportError:
+    PyTubeYouTube = None
 
 try:
     from curl_cffi import requests as curl_requests
@@ -1122,6 +1127,165 @@ def get_instagram_service(cookies_path: str = COOKIES_FILE) -> "InstagramService
 
 
 # ==============================================================================
+# 6.5. PYTUBEFIX YOUTUBE SERVICE (Zero Bot-Detection, No YT-DLP)
+# ==============================================================================
+WORKING_YT_CLIENTS = ['MWEB', 'WEB', 'WEB_SAFARI']
+
+def get_pytube_instance(url: str):
+    """Creates a YouTube instance with client fallback to bypass YouTube's bot detection."""
+    if not PyTubeYouTube:
+        raise RuntimeError("pytubefix is not installed.")
+    last_err = None
+    for client_name in WORKING_YT_CLIENTS:
+        try:
+            yt = PyTubeYouTube(url, client=client_name)
+            _ = yt.title
+            return yt
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Failed to fetch YouTube media across all clients: {last_err}")
+
+
+def extract_youtube_pytube(url: str, audio_only: bool = False) -> Dict[str, Any]:
+    """Pure pytubefix YouTube extraction without yt-dlp to avoid bot blocks."""
+    t0 = time.time()
+    yt = get_pytube_instance(url)
+
+    title = yt.title or "YouTube Video"
+    uploader = yt.author or "Unknown"
+    duration = yt.length
+    thumbnail = yt.thumbnail_url
+
+    best_by_quality: Dict[str, Dict[str, Any]] = {}
+    audio_by_bitrate: Dict[str, Dict[str, Any]] = {}
+
+    for s in yt.streams:
+        itag = str(s.itag)
+        ext = s.mime_type.split('/')[-1] if s.mime_type else 'mp4'
+        is_prog = s.is_progressive
+        has_video = bool(s.includes_video_track)
+        has_audio = bool(s.includes_audio_track)
+        res = s.resolution
+        fps = getattr(s, 'fps', None)
+        vcodec = getattr(s, 'video_codec', None)
+        acodec = getattr(s, 'audio_codec', None)
+        bitrate = getattr(s, 'bitrate', None)
+        bitrate_kbps = round(float(bitrate) / 1000, 1) if bitrate else None
+
+        try:
+            filesize_bytes = getattr(s, 'filesize_approx', None)
+        except Exception:
+            filesize_bytes = None
+
+        filesize_text = format_bytes(filesize_bytes) if filesize_bytes else None
+        p_tag = res if res else "audio_only"
+
+        fmt_entry = {
+            "format_id": itag,
+            "format_note": "progressive" if is_prog else ("video only" if has_video else "audio only"),
+            "ext": ext,
+            "quality": p_tag,
+            "resolution": res or "audio only",
+            "fps": fps,
+            "vcodec": vcodec,
+            "acodec": acodec,
+            "has_video": has_video,
+            "has_audio": has_audio,
+            "bitrate_kbps": bitrate_kbps,
+            "filesize_bytes": filesize_bytes,
+            "filesize": filesize_text,
+            "url": getattr(s, "url", None),
+        }
+
+        if has_video:
+            if p_tag not in best_by_quality:
+                best_by_quality[p_tag] = fmt_entry
+            else:
+                curr = best_by_quality[p_tag]
+                if fmt_entry["has_audio"] and not curr["has_audio"]:
+                    best_by_quality[p_tag] = fmt_entry
+                elif fmt_entry["has_audio"] == curr["has_audio"] and (fmt_entry["bitrate_kbps"] or 0) > (curr.get("bitrate_kbps") or 0):
+                    best_by_quality[p_tag] = fmt_entry
+        elif has_audio:
+            abr_str = getattr(s, 'abr', None) or '128k'
+            abr_key = f"{ext}_{abr_str}"
+            if abr_key not in audio_by_bitrate:
+                audio_by_bitrate[abr_key] = fmt_entry
+            elif (fmt_entry["bitrate_kbps"] or 0) > (audio_by_bitrate[abr_key].get("bitrate_kbps") or 0):
+                audio_by_bitrate[abr_key] = fmt_entry
+
+    def _parse_h(p_str: str) -> int:
+        try:
+            return int(p_str.replace("p", ""))
+        except Exception:
+            return 0
+
+    sorted_video_formats = sorted(best_by_quality.values(), key=lambda x: _parse_h(x["quality"]), reverse=True)
+    sorted_audio_formats = sorted(audio_by_bitrate.values(), key=lambda x: (x.get("bitrate_kbps") or 0), reverse=True)
+    sorted_video_qualities = {v["quality"]: v for v in sorted_video_formats}
+
+    direct_url = sorted_video_formats[0]["url"] if sorted_video_formats else None
+    primary_audio_url = sorted_audio_formats[0]["url"] if sorted_audio_formats else None
+
+    return {
+        "status": "success",
+        "platform": "youtube",
+        "mode": "audio" if audio_only else "all_formats",
+        "title": title,
+        "uploader": uploader,
+        "duration_seconds": duration,
+        "format": "m4a" if audio_only else "mp4",
+        "available_resolutions": list(sorted_video_qualities.keys()),
+        "primary_stream_url": direct_url,
+        "primary_audio_url": primary_audio_url,
+        "video_streams_by_quality": sorted_video_qualities,
+        "video_formats": sorted_video_formats,
+        "audio_formats": sorted_audio_formats,
+        "total_video_qualities": len(sorted_video_formats),
+        "total_audio_streams": len(sorted_audio_formats),
+        "thumbnail_url": thumbnail,
+        "extracted_in_seconds": round(time.time() - t0, 2),
+    }
+
+
+def download_youtube_pytube(url: str, resolution: str = None, itag: Union[int, str] = None) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Downloads YouTube video via pytubefix and returns (file_path, filename, error).
+    """
+    try:
+        yt = get_pytube_instance(url)
+        stream = None
+        if itag:
+            try:
+                stream = yt.streams.get_by_itag(int(itag))
+            except Exception:
+                stream = None
+
+        if not stream and resolution:
+            res = resolution.lower() if resolution.lower().endswith("p") else f"{resolution.lower()}p"
+            prog = yt.streams.filter(progressive=True, file_extension="mp4")
+            stream = prog.filter(resolution=res).first() or yt.streams.filter(file_extension="mp4", res=res).first()
+
+        if not stream:
+            prog = yt.streams.filter(progressive=True, file_extension="mp4")
+            stream = prog.order_by("resolution").desc().first() or yt.streams.filter(file_extension="mp4").first()
+
+        if not stream:
+            return None, None, "No downloadable stream found"
+
+        clean_title = sanitize_filename(yt.title or "youtube_video")
+        out_dir = os.path.abspath("./downloads/youtube")
+        os.makedirs(out_dir, exist_ok=True)
+        res_label = stream.resolution or "stream"
+        filename = f"{clean_title}_{res_label}_{stream.itag}.mp4"
+        file_path = stream.download(output_path=out_dir, filename=filename)
+        return file_path, filename, None
+    except Exception as e:
+        return None, None, str(e)
+
+
+# ==============================================================================
 # 7. YT-DLP SERVICE (YouTube, Shorts, TikTok, Snapchat, Twitter/X, Generic)
 # ==============================================================================
 def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = COOKIES_FILE) -> Dict[str, Any]:
@@ -1341,7 +1505,11 @@ def extract_universal(url: str, cookies_path: str = COOKIES_FILE) -> Dict[str, A
     if any(d in lower for d in ["facebook.com", "fb.watch", "fb.com", "fb.gg"]):
         return extract_ytdlp_media(link, cookies_path=cookies_path)
 
-    # 6. YouTube, TikTok, Snapchat, Twitter, and other yt-dlp supported media
+    # 6. YouTube (Handled via PyTubeFix Bot-Bypass, NOT yt-dlp)
+    if any(d in lower for d in ["youtube.com", "youtu.be"]):
+        return extract_youtube_pytube(link, audio_only=False)
+
+    # 7. TikTok, Snapchat, Twitter, and other yt-dlp supported media
     return extract_ytdlp_media(link, cookies_path=cookies_path)
 
 
@@ -1719,9 +1887,31 @@ def create_app() -> Flask:
         if cached:
             return jsonify(cached), 200
         try:
-            data = extract_ytdlp_media(url, audio_only=audio_only)
+            # Pure PyTubeFix with bot-bypass - Zero YT-DLP
+            data = extract_youtube_pytube(url, audio_only=audio_only)
             set_cached_media(cache_key, data)
             return jsonify(data), 200
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/api/youtube/download", methods=["GET", "POST"])
+    @app.route("/api/yt/download", methods=["GET", "POST"])
+    def api_youtube_download():
+        url = get_param("url")
+        resolution = get_param("resolution")
+        itag = get_param("itag")
+        if not url:
+            return jsonify({"status": "error", "message": "Missing 'url' parameter"}), 400
+        try:
+            file_path, filename, err = download_youtube_pytube(url, resolution=resolution, itag=itag)
+            if err or not file_path:
+                return jsonify({"status": "error", "message": err or "Failed to download video"}), 500
+            return send_file(
+                file_path,
+                as_attachment=True,
+                download_name=filename,
+                mimetype="video/mp4"
+            )
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
