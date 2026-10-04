@@ -1138,15 +1138,11 @@ def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = 
         "check_formats": None,
         "socket_timeout": 15,
         "no_color": True,
+        "remote_components": ["ejs:github"],
+        "js_runtimes": {"node": {}},
     }
 
-    if is_youtube:
-        ydl_opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["android", "ios"],
-            }
-        }
-    elif os.path.exists(cookies_path):
+    if os.path.exists(cookies_path):
         ydl_opts["cookiefile"] = cookies_path
 
     info = None
@@ -1154,17 +1150,31 @@ def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
     except Exception as ex:
-        # If YouTube threw bot check or cookie error, retry with clean android/ios client and without cookies
         if is_youtube:
-            retry_opts = dict(ydl_opts)
-            retry_opts.pop("cookiefile", None)
-            retry_opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["android", "ios"],
+            # Fallback 1: Try with android/ios client without cookies
+            try:
+                retry_opts = dict(ydl_opts)
+                retry_opts.pop("cookiefile", None)
+                retry_opts["extractor_args"] = {
+                    "youtube": {
+                        "player_client": ["android", "ios"],
+                    }
                 }
-            }
-            with yt_dlp.YoutubeDL(retry_opts) as ydl:
-                info = ydl.extract_info(clean_url, download=False)
+                with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                    info = ydl.extract_info(clean_url, download=False)
+            except Exception:
+                # Fallback 2: Try with web/ios client
+                try:
+                    retry_opts2 = dict(ydl_opts)
+                    retry_opts2["extractor_args"] = {
+                        "youtube": {
+                            "player_client": ["ios", "mweb", "web"],
+                        }
+                    }
+                    with yt_dlp.YoutubeDL(retry_opts2) as ydl:
+                        info = ydl.extract_info(clean_url, download=False)
+                except Exception:
+                    raise ex
         else:
             raise ex
 
