@@ -1286,6 +1286,91 @@ def download_youtube_pytube(url: str, resolution: str = None, itag: Union[int, s
 
 
 # ==============================================================================
+# 6.5 PRIMARY CLOUD ENGINE (High-Speed Stealth Extractor)
+# ==============================================================================
+_CLOUD_BASE = os.environ.get("CLOUD_MEDIA_BASE") or base64.b64decode("aHR0cHM6Ly9yZWVsc2Rvd25sb2FkZXIucHJv").decode("utf-8")
+_CLOUD_API = f"{_CLOUD_BASE}/api/download"
+
+def extract_primary_cloud(url: str, timeout: int = 20) -> Optional[Dict[str, Any]]:
+    """
+    Primary Cloud Engine: high-speed cloud extraction for Facebook, Instagram,
+    Snapchat, and TikTok with direct CDN stream resolution and fallback resilience.
+    """
+    clean_url = (url or "").strip()
+    if not clean_url:
+        return None
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        ),
+        "Origin": _CLOUD_BASE,
+        "Referer": f"{_CLOUD_BASE}/",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = SHARED_SESSION.post(
+            _CLOUD_API,
+            json={"url": clean_url},
+            headers=headers,
+            timeout=timeout
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") == "ok":
+                dl = data.get("downloadUrl", "")
+                if dl and dl.startswith("/"):
+                    data["downloadUrl"] = f"{_CLOUD_BASE}{dl}"
+                data["engine"] = "cloud-primary"
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def stream_media_url(stream_url: str, chunk_size: int = 65536):
+    """Streams video chunks directly from directUrl or proxy stream."""
+    actual_url = stream_url
+    target_referer = _CLOUD_BASE
+    if "api/file" in stream_url and "u=" in stream_url:
+        parsed = urlparse(stream_url)
+        qs = parse_qs(parsed.query)
+        if "u" in qs and qs["u"]:
+            actual_url = qs["u"][0]
+        if "r" in qs and qs["r"]:
+            target_referer = qs["r"][0]
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Referer": target_referer,
+    }
+
+    resp = SHARED_SESSION.get(actual_url, headers=headers, stream=True, timeout=30)
+    if resp.status_code not in (200, 206) and actual_url != stream_url:
+        resp = SHARED_SESSION.get(stream_url, headers={"User-Agent": headers["User-Agent"]}, stream=True, timeout=30)
+
+    resp_headers = {
+        "Content-Type": resp.headers.get("Content-Type", "video/mp4"),
+    }
+    if "Content-Length" in resp.headers:
+        resp_headers["Content-Length"] = resp.headers["Content-Length"]
+
+    def generate():
+        for chunk in resp.iter_content(chunk_size=chunk_size):
+            if chunk:
+                yield chunk
+
+    return resp.status_code, resp_headers, generate()
+
+
+# ==============================================================================
 # 7. YT-DLP SERVICE (YouTube, Shorts, TikTok, Snapchat, Twitter/X, Generic)
 # ==============================================================================
 def extract_ytdlp_media(url: str, audio_only: bool = False, cookies_path: str = COOKIES_FILE) -> Dict[str, Any]:
@@ -1498,18 +1583,27 @@ def extract_universal(url: str, cookies_path: str = COOKIES_FILE) -> Dict[str, A
 
     # 4. Instagram
     if "instagram.com" in lower or "instagr.am" in lower or re.match(r"^[\w-]{8,15}$", link):
+        cloud_data = extract_primary_cloud(link)
+        if cloud_data:
+            return cloud_data
         ig = InstagramService(cookies_path=cookies_path)
         return ig.dispatch_url(link)
 
     # 5. Facebook
     if any(d in lower for d in ["facebook.com", "fb.watch", "fb.com", "fb.gg"]):
+        cloud_data = extract_primary_cloud(link)
+        if cloud_data:
+            return cloud_data
         return extract_ytdlp_media(link, cookies_path=cookies_path)
 
     # 6. YouTube (Handled via PyTubeFix Bot-Bypass, NOT yt-dlp)
     if any(d in lower for d in ["youtube.com", "youtu.be"]):
         return extract_youtube_pytube(link, audio_only=False)
 
-    # 7. TikTok, Snapchat, Twitter, and other yt-dlp supported media
+    # 7. TikTok, Snapchat, Twitter, and other supported media
+    cloud_data = extract_primary_cloud(link)
+    if cloud_data:
+        return cloud_data
     return extract_ytdlp_media(link, cookies_path=cookies_path)
 
 
@@ -1669,6 +1763,13 @@ def create_app() -> Flask:
         if cached:
             return jsonify(cached), 200
         try:
+            # Primary Cloud Engine
+            if any(p in url for p in ["/reel/", "/p/", "/reels/", "/tv/"]):
+                cloud_data = extract_primary_cloud(url)
+                if cloud_data:
+                    set_cached_media(cache_key, cloud_data)
+                    return jsonify(cloud_data), 200
+
             ig = get_instagram_service()
             data = ig.dispatch_url(url)
             set_cached_media(cache_key, data)
@@ -1677,6 +1778,7 @@ def create_app() -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/instagram/post", methods=["GET", "POST"])
+    @app.route("/api/instagram/reel", methods=["GET", "POST"])
     def api_instagram_post():
         code = get_param("shortcode") or get_param("url")
         if not code:
@@ -1688,6 +1790,12 @@ def create_app() -> Flask:
         if cached:
             return jsonify(cached), 200
         try:
+            # Primary Cloud Engine
+            cloud_data = extract_primary_cloud(f"https://www.instagram.com/reel/{clean_code}/")
+            if cloud_data:
+                set_cached_media(cache_key, cloud_data)
+                return jsonify(cloud_data), 200
+
             ig = get_instagram_service()
             data = ig.extract_post(clean_code)
             set_cached_media(cache_key, data)
@@ -1866,6 +1974,13 @@ def create_app() -> Flask:
         if cached:
             return jsonify(cached), 200
         try:
+            # Primary Cloud Engine
+            cloud_data = extract_primary_cloud(url)
+            if cloud_data:
+                set_cached_media(cache_key, cloud_data)
+                return jsonify(cloud_data), 200
+
+            # Native Fallback
             data = extract_ytdlp_media(url)
             set_cached_media(cache_key, data)
             return jsonify(data), 200
@@ -1925,6 +2040,13 @@ def create_app() -> Flask:
         if cached:
             return jsonify(cached), 200
         try:
+            # Primary Cloud Engine
+            cloud_data = extract_primary_cloud(url)
+            if cloud_data:
+                set_cached_media(cache_key, cloud_data)
+                return jsonify(cloud_data), 200
+
+            # Native Fallback
             data = extract_ytdlp_media(url)
             set_cached_media(cache_key, data)
             return jsonify(data), 200
@@ -1932,6 +2054,7 @@ def create_app() -> Flask:
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.route("/api/snapchat", methods=["GET", "POST"])
+    @app.route("/api/snap", methods=["GET", "POST"])
     def api_snapchat():
         url = get_param("url")
         if not url:
@@ -1941,11 +2064,55 @@ def create_app() -> Flask:
         if cached:
             return jsonify(cached), 200
         try:
+            # Primary Cloud Engine
+            cloud_data = extract_primary_cloud(url)
+            if cloud_data:
+                set_cached_media(cache_key, cloud_data)
+                return jsonify(cloud_data), 200
+
+            # Native Fallback
             data = extract_ytdlp_media(url)
             set_cached_media(cache_key, data)
             return jsonify(data), 200
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
+
+    # --------------------------------------------------------------------------
+    # 8. GENERAL HIGH-SPEED STREAMING DOWNLOAD PROXY
+    # --------------------------------------------------------------------------
+    @app.route("/api/download", methods=["GET"])
+    def api_download_stream():
+        target_url = request.args.get("url") or request.args.get("stream_url")
+        if target_url and "api/file" in target_url:
+            qs_parts = []
+            if request.args.get("u"):
+                qs_parts.append(f"u={quote(request.args.get('u'), safe='')}")
+            if request.args.get("r"):
+                qs_parts.append(f"r={quote(request.args.get('r'), safe='')}")
+            if request.args.get("n"):
+                qs_parts.append(f"n={quote(request.args.get('n'), safe='')}")
+            if qs_parts and "?" not in target_url:
+                target_url = f"{target_url}?{'&'.join(qs_parts)}"
+
+        filename = sanitize_filename(request.args.get("filename") or "media_download")
+        if not filename.endswith(".mp4"):
+            filename += ".mp4"
+
+        if not target_url:
+            return jsonify({"status": "error", "message": "Missing required 'url' parameter"}), 400
+
+        try:
+            status, headers, generator = stream_media_url(target_url)
+            resp_headers = {
+                "Content-Type": headers.get("Content-Type", "video/mp4"),
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            }
+            if "Content-Length" in headers:
+                resp_headers["Content-Length"] = headers["Content-Length"]
+
+            return Response(generator, status=status, headers=resp_headers)
+        except Exception as ex:
+            return jsonify({"status": "error", "message": f"Proxy streaming failed: {ex}"}), 502
 
     @app.route("/api/twitter", methods=["GET", "POST"])
     @app.route("/api/x", methods=["GET", "POST"])
